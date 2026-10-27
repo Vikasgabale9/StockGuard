@@ -1,0 +1,38 @@
+
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      keepalive-time: 60000
+      max-lifetime: 240000
+      connection-timeout: 30000
+      validation-timeout: 5000
+      minimum-idle: 2
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+  endpoint:
+    health:
+      show-details: never
+
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: StockGuard
+    description: Concurrent Inventory Reservation System
+    version: 1.0.0
