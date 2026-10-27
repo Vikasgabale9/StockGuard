@@ -1,6 +1,7 @@
 
 package com.vikas.stockguard.exception;
 
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
@@ -21,10 +22,24 @@ public class GlobalExceptionHandler {
     private static final Logger log =
             LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiResponse<Void>> handleResourceNotFound(
+            NoResourceFoundException ex,
+            HttpServletRequest request) {
+
+        return error(
+                "Resource not found",
+                HttpStatus.NOT_FOUND,
+                request
+        );
+    }
+
     @ExceptionHandler(MissingRequestHeaderException.class)
     public ResponseEntity<ApiResponse<Void>> handleMissingHeader(
             MissingRequestHeaderException ex,
             HttpServletRequest request) {
+
+        log.error("Unexpected error while processing {}", request.getRequestURI(), ex);
 
         return error(
                 "Required request header is missing: " + ex.getHeaderName(),
@@ -104,7 +119,3 @@ public class GlobalExceptionHandler {
                 ));
     }
 }
-/*DB_URL=jdbc:postgresql://ep-icy-haze-b5cx4fxh-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require
-DB_USERNAME=neondb_owner
-DB_PASSWORD=npg_jnceXk3RHg4L
-*/

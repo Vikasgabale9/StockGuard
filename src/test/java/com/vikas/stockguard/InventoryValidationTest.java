@@ -1,13 +1,13 @@
+
 package com.vikas.stockguard;
 
+import com.vikas.stockguard.dto.req.CreateInventoryRequest;
 import com.vikas.stockguard.entity.Inventory;
 import com.vikas.stockguard.repository.InventoryRepository;
 import com.vikas.stockguard.repository.ReservationRepository;
-
 import com.vikas.stockguard.service.InventoryService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
@@ -17,11 +17,9 @@ import tools.jackson.databind.ObjectMapper;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-
-import com.vikas.stockguard.dto.req.CreateInventoryRequest;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -70,10 +68,12 @@ class InventoryValidationTest {
                     }
                     """.formatted(sku, quantity);
 
-            mockMvc.perform(post("/api/inventory/reserve")
-                            .header("Idempotency-Key", idempotencyKey)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(requestBody))
+            mockMvc.perform(
+                            post("/api/v1/inventory/reserve")
+                                    .header("Idempotency-Key", idempotencyKey)
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content(requestBody)
+                    )
                     .andExpect(status().isBadRequest());
 
             Inventory updatedInventory = inventoryRepository
@@ -91,9 +91,10 @@ class InventoryValidationTest {
             inventoryRepository.deleteById(inventory.getId());
         }
     }
+
     @Test
     void duplicateSkuShouldBeRejected() {
-        String sku = "DUP-" + java.util.UUID.randomUUID();
+        String sku = "DUP-" + UUID.randomUUID();
 
         CreateInventoryRequest first = new CreateInventoryRequest();
         first.setSku(sku);
@@ -104,7 +105,7 @@ class InventoryValidationTest {
         duplicate.setAvailableQuantity(100);
 
         try {
-            Inventory created = inventoryService.createInventory(first);
+            inventoryService.createInventory(first);
 
             assertThrows(
                     IllegalArgumentException.class,
@@ -115,6 +116,7 @@ class InventoryValidationTest {
                     .orElseThrow();
 
             assertEquals(20, stored.getAvailableQuantity());
+
         } finally {
             inventoryRepository.findBySku(sku)
                     .ifPresent(inventoryRepository::delete);
@@ -136,7 +138,7 @@ class InventoryValidationTest {
     @Test
     void negativeInitialQuantityShouldBeRejected() {
         CreateInventoryRequest request = new CreateInventoryRequest();
-        request.setSku("NEG-" + java.util.UUID.randomUUID());
+        request.setSku("NEG-" + UUID.randomUUID());
         request.setAvailableQuantity(-1);
 
         assertThrows(
@@ -147,7 +149,7 @@ class InventoryValidationTest {
 
     @Test
     void missingIdempotencyKeyShouldReturnBadRequest() throws Exception {
-        String sku = "HDR-" + java.util.UUID.randomUUID();
+        String sku = "HDR-" + UUID.randomUUID();
 
         CreateInventoryRequest request = new CreateInventoryRequest();
         request.setSku(sku);
@@ -157,14 +159,14 @@ class InventoryValidationTest {
 
         try {
             mockMvc.perform(
-                            post("/api/inventory/reserve")
+                            post("/api/v1/inventory/reserve")
                                     .contentType(MediaType.APPLICATION_JSON)
                                     .content("""
-                                        {
-                                          "sku": "%s",
-                                          "quantity": 2
-                                        }
-                                        """.formatted(sku))
+                                            {
+                                              "sku": "%s",
+                                              "quantity": 2
+                                            }
+                                            """.formatted(sku))
                     )
                     .andExpect(status().isBadRequest());
 
@@ -174,9 +176,9 @@ class InventoryValidationTest {
                             .orElseThrow()
                             .getAvailableQuantity()
             );
+
         } finally {
-            inventoryRepository.deleteById(inventory.getId())
-            ;
+            inventoryRepository.deleteById(inventory.getId());
         }
     }
 }
