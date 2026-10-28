@@ -33,6 +33,3 @@ EXPOSE 8080
 # Xss512k              → 200 Tomcat threads × 1MB default stack = 200 MB wasted
 
 ENTRYPOINT ["sh", "-c", "exec java -XX:MaxRAMPercentage=65 -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC -Xss512k -Dserver.port=${PORT:-8080} -Dspring.profiles.active=prod -jar app.jar"]
-git add .
-git commit -m "Configure Docker and Render deployment for StockGuard"
-git push origin main
