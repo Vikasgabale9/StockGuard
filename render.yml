@@ -1,0 +1,17 @@
+
+services:
+  - type: web
+    name: stockguard
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./dockerfile
+    dockerContext: .
+    healthCheckPath: /actuator/health
+    envVars:
+      - key: DB_URL
+        sync: false
+      - key: DB_USERNAME
+        sync: false
+      - key: DB_PASSWORD
+        sync: false

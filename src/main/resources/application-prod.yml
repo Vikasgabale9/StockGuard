@@ -1,0 +1,32 @@
+spring:
+  jpa:
+    show-sql: false
+    hibernate:
+      ddl-auto: validate
+  datasource:
+    hikari:
+      maximum-pool-size: 3        # Neon free tier + Render free tier: keep small
+      minimum-idle: 1
+      keepalive-time: 60000
+      max-lifetime: 240000
+
+server:
+  tomcat:
+    threads:
+      max: 20                     # 200 default threads wastes stack on 512 MB
+      min-spare: 5
+
+springdoc:
+  api-docs:
+    enabled: true                 # keep on for the portfolio demo
+  swagger-ui:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
