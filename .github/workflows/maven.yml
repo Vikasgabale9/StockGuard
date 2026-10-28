@@ -26,4 +26,8 @@ jobs:
         run: chmod +x mvnw
 
       - name: Build and test
+        env:
+          DB_URL: ${{ secrets.DB_URL }}
+          DB_USERNAME: ${{ secrets.DB_USERNAME }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: ./mvnw --batch-mode clean verify
