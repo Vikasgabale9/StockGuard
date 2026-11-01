@@ -1,4 +1,3 @@
-
 name: StockGuard CI and Docker Publish
 
 on:

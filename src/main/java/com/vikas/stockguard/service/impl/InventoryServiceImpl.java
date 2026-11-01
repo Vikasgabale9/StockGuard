@@ -1,13 +1,18 @@
 
 package com.vikas.stockguard.service.impl;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vikas.stockguard.dto.req.CreateInventoryRequest;
 import com.vikas.stockguard.dto.req.ReserveInventoryRequest;
 import com.vikas.stockguard.dto.res.ReservationResponseDto;
 import com.vikas.stockguard.entity.Inventory;
+import com.vikas.stockguard.entity.OutboxEvent;
 import com.vikas.stockguard.entity.Reservation;
+import com.vikas.stockguard.messaging.event.InventoryReservedEvent;
 import com.vikas.stockguard.repository.IdempotencyLockRepository;
 import com.vikas.stockguard.repository.InventoryRepository;
+import com.vikas.stockguard.repository.OutboxEventRepository;
 import com.vikas.stockguard.repository.ReservationRepository;
 import com.vikas.stockguard.service.InventoryService;
 import jakarta.persistence.EntityNotFoundException;
@@ -18,8 +23,9 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
+import java.time.Instant;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -31,9 +37,14 @@ public class InventoryServiceImpl implements InventoryService {
     private final ReservationRepository reservationRepository;
     private final IdempotencyLockRepository idempotencyLockRepository;
 
+    // Outbox dependencies
+    private final OutboxEventRepository outboxEventRepository;
+    private final ObjectMapper objectMapper;
+
     @Override
     @Transactional(readOnly = true)
     public Inventory getInventoryBySku(String sku) {
+
         if (sku == null || sku.isBlank()) {
             throw new IllegalArgumentException(
                     "SKU cannot be null or blank");
@@ -47,6 +58,7 @@ public class InventoryServiceImpl implements InventoryService {
     @Override
     @Transactional
     public Inventory createInventory(CreateInventoryRequest req) {
+
         if (req == null) {
             throw new IllegalArgumentException(
                     "Inventory request cannot be null");
@@ -77,8 +89,6 @@ public class InventoryServiceImpl implements InventoryService {
         try {
             return inventoryRepository.save(dtoToEntity(req));
         } catch (DataIntegrityViolationException ex) {
-            // The database unique constraint protects against
-            // duplicate SKUs created by concurrent requests.
             throw new IllegalArgumentException(
                     "SKU already exists or violates an inventory constraint: "
                             + sku, ex);
@@ -103,17 +113,19 @@ public class InventoryServiceImpl implements InventoryService {
                         idempotencyKey);
 
         if (existingReservation.isPresent()) {
+
             Reservation existing = existingReservation.get();
 
-            // A key cannot be reused for a different request.
+            // Prevent reuse of the same key with different request data.
             if (!existing.getSku().equals(req.getSku())
                     || existing.getQuantity() != req.getQuantity()) {
+
                 throw new IllegalArgumentException(
                         "Idempotency key has already been used "
                                 + "with different request data");
             }
 
-            // Return the original outcome without changing stock.
+            // Return the original result without deducting stock again.
             return toResponse(existing);
         }
 
@@ -123,6 +135,7 @@ public class InventoryServiceImpl implements InventoryService {
                 req.getQuantity());
 
         if (updatedRows == 0) {
+
             boolean skuExists =
                     inventoryRepository.existsBySku(req.getSku());
 
@@ -140,9 +153,11 @@ public class InventoryServiceImpl implements InventoryService {
             Reservation saved =
                     reservationRepository.save(rejectedReservation);
 
+            // Rejected reservations do not generate reserved events.
             return toResponse(saved);
         }
 
+        // Successful reservation.
         Reservation successfulReservation = new Reservation(
                 idempotencyKey,
                 req.getSku(),
@@ -153,18 +168,55 @@ public class InventoryServiceImpl implements InventoryService {
         Reservation saved =
                 reservationRepository.save(successfulReservation);
 
+        // -----------------------------------------
+        // TRANSACTIONAL OUTBOX EVENT CREATION
+        // -----------------------------------------
+
+        UUID eventId = UUID.randomUUID();
+
+        InventoryReservedEvent event = new InventoryReservedEvent(
+                eventId,
+                saved.getId(),
+                saved.getSku(),
+                saved.getQuantity(),
+                "INVENTORY_RESERVED",
+                Instant.now()
+        );
+
+        try {
+
+            String payload = objectMapper.writeValueAsString(event);
+
+            OutboxEvent outboxEvent = new OutboxEvent(
+                    eventId,
+                    "INVENTORY_RESERVED",
+                    "RESERVATION",
+                    saved.getId().toString(),
+                    payload
+            );
+
+            // Saved in the same database transaction as reservation.
+            outboxEventRepository.save(outboxEvent);
+
+        } catch (JsonProcessingException ex) {
+
+            throw new IllegalStateException(
+                    "Failed to serialize inventory reservation event",
+                    ex
+            );
+        }
+
         return toResponse(saved);
     }
 
     @Override
     @Transactional(readOnly = true)
     public Page<Inventory> getAllInventories(Pageable pageable) {
-
-
         return inventoryRepository.findAll(pageable);
     }
 
     public Inventory dtoToEntity(CreateInventoryRequest request) {
+
         return new Inventory(
                 request.getSku(),
                 request.getAvailableQuantity());
@@ -195,6 +247,7 @@ public class InventoryServiceImpl implements InventoryService {
     }
 
     private void validateIdempotencyKey(String idempotencyKey) {
+
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new IllegalArgumentException(
                     "Idempotency key cannot be null or blank");
@@ -208,11 +261,13 @@ public class InventoryServiceImpl implements InventoryService {
     }
 
     private ReservationResponseDto toResponse(Reservation reservation) {
+
         ReservationResponseDto response =
                 new ReservationResponseDto();
 
         response.setIdempotencyKey(
                 reservation.getIdempotencyKey());
+
         response.setSku(reservation.getSku());
         response.setQuantity(reservation.getQuantity());
         response.setStatus(reservation.getStatus());

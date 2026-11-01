@@ -1,80 +1,64 @@
 # StockGuard — Concurrent Inventory Reservation System
 
-[![StockGuard CI](https://github.com/Vikasgabale9/StockGuard/actions/workflows/maven.yml/badge.svg)](https://github.com/Vikasgabale9/StockGuard/actions/workflows/maven.yml)
+[![StockGuard CI](https://github.com/Vikasgabale9/stockguard/actions/workflows/maven.yml/badge.svg)](https://github.com/Vikasgabale9/stockguard/actions/workflows/maven.yml)
 [![Java](https://img.shields.io/badge/Java-25-orange)](https://www.oracle.com/java/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.2-brightgreen)](https://spring.io/projects/spring-boot)
-[![Database](https://img.shields.io/badge/Database-PostgreSQL-336791)](https://www.postgresql.org/)
+[![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL-336791)](https://www.postgresql.org/)
+[![Kafka](https://img.shields.io/badge/Messaging-Kafka-231F20)](https://kafka.apache.org/)
+[![Docker](https://img.shields.io/badge/Container-Docker-2496ED)](https://www.docker.com/)
 
-**StockGuard is a backend inventory reservation system that prevents overselling under concurrent load and makes retries safe through idempotency keys.**
+StockGuard is a backend inventory reservation system designed to prevent overselling during concurrent requests and make client retries safe through idempotency keys. It uses PostgreSQL for inventory consistency and Apache Kafka for asynchronous reservation-event handling.
 
-Built with Java 25, Spring Boot 4, and PostgreSQL. The project demonstrates database-level concurrency control, idempotent API design, integration testing with a real database, and continuous integration.
-
-**Repository:** [Vikasgabale9/StockGuard](https://github.com/Vikasgabale9/StockGuard)
+**Repository:** [Vikasgabale9/stockguard](https://github.com/Vikasgabale9/stockguard)
 
 ## Table of Contents
 
 - [Problem Statement](#problem-statement)
-- [Concurrency Evidence](#concurrency-evidence)
-- [Key Features](#key-features)
+- [Features](#features)
 - [Technology Stack](#technology-stack)
 - [Architecture](#architecture)
-- [How Reservation Works](#how-reservation-works)
+- [Reservation and Idempotency Flow](#reservation-and-idempotency-flow)
+- [Kafka and Transactional Outbox](#kafka-and-transactional-outbox)
+- [Retry and Dead-Letter Handling](#retry-and-dead-letter-handling)
 - [API Reference](#api-reference)
 - [Getting Started](#getting-started)
 - [Configuration](#configuration)
-- [Testing](#testing)
-- [Continuous Integration](#continuous-integration)
+- [Testing and Verification](#testing-and-verification)
+- [CI and Docker Image Publishing](#ci-and-docker-image-publishing)
 - [Design Decisions](#design-decisions)
 - [Known Limitations](#known-limitations)
-- [Future Enhancements](#future-enhancements)
+- [Future Improvements](#future-improvements)
 - [Author](#author)
 
 ## Problem Statement
 
-An inventory item has one unit left. Two clients send a reservation request at the same moment. A naive implementation reads `available_quantity = 1` in both requests, both pass the check, and both write `available_quantity = 0`. The item is now sold twice, and the inventory is wrong.
+When multiple clients reserve the last available units at the same time, a naive read-check-update implementation can allow more than one request to observe the same stock and oversell it.
 
-The same category of bug appears in ticket booking, flight and hotel reservations, flash sales, and any system where a finite resource is claimed concurrently.
+StockGuard addresses this with:
 
-StockGuard solves this with three mechanisms working together:
+1. **Atomic conditional stock updates** so the stock check and decrement happen in one database statement.
+2. **Idempotency keys** so retries of the same logical request do not reserve stock again.
+3. **Database transactions and constraints** to keep inventory and reservation state consistent.
+4. **A transactional outbox** to record reservation events in the same transaction as the reservation.
+5. **Kafka consumers with duplicate-event protection** to handle asynchronous event delivery.
 
-1. **Conditional database update** — the stock check and the decrement happen in a single atomic SQL statement.
-2. **Idempotency keys** — retries of the same logical operation reuse the stored outcome instead of reserving again.
-3. **Persisted reservation outcomes** — rejected and successful reservations are both recorded, so retries see the same result.
+## Features
 
-## Concurrency Evidence
-
-The core invariant is:
-
-> **A successful reservation must never cause `available_quantity` to fall below zero.**
-
-This is proven by `InventoryConcurrencyTest`:
-
-- 20 threads, each requesting 10 units, against an item with 100 units in stock.
-- All 20 threads are released simultaneously using `CountDownLatch` so the race condition is exercised.
-- Assertions: exactly 10 reservations succeed, 10 are rejected with insufficient stock, and `available_quantity` ends at exactly `0`.
-- The test runs against a real PostgreSQL database, not a mock.
-
-`IdempotencyConcurrencyTest` additionally proves:
-
-- Two concurrent requests with the same `Idempotency-Key` reserve stock only once.
-- Same key with a different payload is rejected.
-- A previously rejected reservation remains rejected on retry.
-
-Both tests execute in GitHub Actions CI on every push.
-
-## Key Features
-
-- Create and retrieve inventory records.
+- Create inventory items and retrieve inventory by SKU.
 - Paginated inventory listing.
-- Conditional, atomic stock reservation at the database level.
+- Atomic stock reservation using a conditional SQL update.
 - Idempotent reservation requests using the `Idempotency-Key` header.
-- PostgreSQL advisory transaction locks to serialise duplicate requests.
-- Persisted reservation outcomes so retries return the original result.
-- Centralized validation and error handling with consistent `ApiResponse<T>` envelopes.
+- PostgreSQL transaction-scoped advisory locks to coordinate requests using the same idempotency key.
+- Persisted successful and rejected reservation outcomes.
+- Transactional outbox for reservation-event publication.
+- Kafka producer and consumer integration.
+- Consumer-side event deduplication using a PostgreSQL `processed_events` table.
+- Retry handling and dead-letter topic publishing for failed main-topic processing.
+- Persistence of dead-letter event metadata in PostgreSQL.
 - OpenAPI / Swagger UI documentation.
 - Spring Boot Actuator health and info endpoints.
-- JUnit 5 + Mockito + real-database integration tests.
-- GitHub Actions CI on every push and pull request targeting `main`.
+- JUnit tests and real PostgreSQL-backed integration testing.
+- GitHub Actions build/test workflow and Docker image publishing workflow.
 
 ## Technology Stack
 
@@ -82,69 +66,89 @@ Both tests execute in GitHub Actions CI on every push.
 |---|---|
 | Language | Java 25 |
 | Framework | Spring Boot 4.1.2 |
-| Database | PostgreSQL (hosted on Neon) |
+| Database | PostgreSQL (Neon) |
 | Persistence | Spring Data JPA, Hibernate |
-| Build tool | Maven (wrapper included) |
-| API documentation | OpenAPI 3 / Swagger UI (springdoc) |
+| Messaging | Apache Kafka / Redpanda Cloud |
+| Build | Maven |
+| API documentation | OpenAPI 3 / Swagger UI |
 | Monitoring | Spring Boot Actuator |
 | Testing | JUnit 5, Mockito, Spring Boot Test |
 | CI | GitHub Actions |
-| Version control | Git, GitHub |
+| Containerization | Docker, multi-stage build |
+| Container registry | GitHub Container Registry (GHCR) |
 
 ## Architecture
 
-StockGuard is a single Spring Boot application with a layered structure:
+StockGuard is a layered Spring Boot application. PostgreSQL remains the source of truth for inventory and reservation state. Kafka is used for asynchronous event delivery.
 
 ```text
-                Client
-                  |
-                  v
-         REST API / HTTP Request
-                  |
-                  v
-        +---------------------+
-        | InventoryController |
-        +---------------------+
-                  |
-                  v
-        +---------------------+
-        |  InventoryService   |
-        | Business Logic      |
-        | @Transactional      |
-        +---------------------+
-                  |
-          +-------+--------+
-          |                |
-          v                v
-  Conditional Stock   Idempotency
-      Update          (pg_advisory_xact_lock
-                       + unique constraint)
-          |                |
-          +-------+--------+
-                  |
-                  v
-        +---------------------+
-        | Repository Layer    |
-        +---------------------+
-                  |
-                  v
-        +---------------------+
-        | PostgreSQL (Neon)   |
-        | inventory           |
-        | reservation         |
-        +---------------------+
+                         Client
+                           |
+                           v
+                    Inventory REST API
+                           |
+                           v
+                    Inventory Service
+                     @Transactional
+                           |
+             +-------------+-------------+
+             |                           |
+             v                           v
+      Inventory update             Reservation record
+      (conditional SQL)             (idempotency key)
+             |                           |
+             +-------------+-------------+
+                           |
+                           v
+                      PostgreSQL
+                           |
+              Reservation + Outbox row
+                committed atomically
+                           |
+                           v
+                    Outbox Publisher
+                           |
+                           v
+                    Kafka topic:
+                  inventory.reserved
+                           |
+                           v
+                  Inventory Event Consumer
+                           |
+                           v
+                 processed_events table
+                  (duplicate protection)
+
+
+       Failed main-topic processing
+                    |
+                    v
+             Retry / Error Handler
+                    |
+                    v
+        Kafka topic: inventory.reserved-dlt
+                    |
+                    v
+              DLT Consumer
+                    |
+                    v
+          dead_letter_events table
 ```
 
-- **Controller layer** — receives HTTP requests, validates input, returns `ApiResponse<T>`.
-- **Service layer** — owns the transaction boundary, performs the conditional stock update, coordinates idempotency.
-- **Repository layer** — executes atomic SQL and JPA operations.
-- **PostgreSQL** — the single source of truth for stock and reservation state.
+### Main components
 
-## How Reservation Works
+- **Controller layer:** validates HTTP input and exposes inventory endpoints.
+- **Service layer:** owns reservation transactions, idempotency coordination, and business rules.
+- **Repository layer:** performs JPA operations and database-specific atomic SQL.
+- **Outbox publisher:** polls pending outbox records, publishes them to Kafka, and updates publication status after broker acknowledgement.
+- **Main Kafka consumer:** records processed event IDs to prevent the same event from being processed more than once by the consumer's database operation.
+- **DLT consumer:** reads failed messages from the dead-letter topic and stores their payload and failure metadata.
 
-### Step 1 — Conditional stock update
+## Reservation and Idempotency Flow
 
-The stock check and decrement happen in a single statement:
+### 1. Atomic stock update
+
+The stock check and decrement are performed together:
 
 ```sql
 UPDATE inventory
@@ -153,108 +157,142 @@ WHERE sku = :sku
   AND available_quantity >= :quantity;
 ```
 
-If zero rows are updated, the reservation is rejected. This statement alone prevents overselling because PostgreSQL serialises the write to the row, and any competing request either sees the updated value or blocks until the first transaction commits.
+If no row is updated, the requested quantity cannot be reserved. This prevents the available quantity from becoming negative through competing reservation requests.
 
-### Step 2 — Idempotency coordination
+### 2. Idempotency coordination
 
-Each reservation request carries a unique `Idempotency-Key` header. Inside the transaction, StockGuard:
+Every reservation request must include an `Idempotency-Key` header.
 
-1. Acquires `pg_advisory_xact_lock` on the hash of the idempotency key. Concurrent requests with the same key serialise here.
-2. Looks up an existing reservation for that key.
-3. If found and the payload matches, returns the existing reservation without touching stock.
-4. If found and the payload differs, rejects with `409 Conflict`.
-5. If not found, proceeds with the conditional update and persists the reservation.
+The reservation flow:
 
-The `unique` constraint on `reservation.idempotency_key` is the final backstop: even if two identical requests slip past the advisory lock (for example, during a failover), only one `INSERT` can succeed.
+1. Acquires a PostgreSQL transaction-scoped advisory lock for the idempotency key.
+2. Checks whether a reservation already exists for that key.
+3. If the key exists with the same request data, returns the stored reservation.
+4. If the key exists with different request data, rejects the request.
+5. If the key is new, attempts the conditional stock update and stores the outcome.
 
-### Idempotency rules
+A unique database constraint on the idempotency key provides an additional safeguard.
 
-| Same key, same payload | Return the original reservation; do not reserve again |
-| Same key, different payload | Reject with `409 Conflict` |
-| Different key | Independent reservation |
+| Request | Expected behavior |
+|---|---|
+| Same key, same payload | Return the original reservation; do not deduct stock again |
+| Same key, different payload | Reject the request |
+| Different key | Process as a separate reservation |
 
-### Step 3 — Persisted outcomes
+Both successful and rejected reservation outcomes are persisted. Therefore, retrying a previously rejected request with the same key returns the stored rejection rather than silently trying again after stock changes.
 
-Both successful and rejected reservations are stored. When a client retries after a network timeout, the outcome is read from the database rather than re-executed. A previously rejected reservation therefore remains rejected on retry — retries do not silently succeed.
+## Kafka and Transactional Outbox
+
+The reservation transaction writes both the reservation result and an outbox event to PostgreSQL. The outbox record is committed in the same database transaction as the reservation.
+
+A scheduled outbox publisher:
+
+1. Finds pending outbox records.
+2. Publishes each event to the `inventory.reserved` Kafka topic.
+3. Uses the event's aggregate ID as the Kafka message key.
+4. Waits for the Kafka send result.
+5. Marks the outbox record as published after successful acknowledgement.
+6. Records a failure on the outbox record when publication fails, allowing a later scheduled poll to try again.
+
+This avoids the dual-write problem where a database transaction succeeds but event publication fails independently.
+
+### Consumer idempotency
+
+The main consumer uses the event ID as a unique key in the PostgreSQL `processed_events` table. It inserts the event ID only if it has not already been recorded.
+
+If the same event is delivered again, the insert does not create another row and the consumer logs that the duplicate event was ignored.
+
+**Scope note:** In the current implementation, the inventory quantity is changed by the synchronous reservation API. The Kafka consumer currently demonstrates event consumption and duplicate-event persistence/logging; it does not perform a second inventory deduction or a separate substantial downstream business operation.
+
+### Delivery semantics
+
+Kafka delivery and outbox publication should be treated as **at-least-once**, not exactly-once. A publisher can send an event and fail before recording the published status, which can result in another publication. Consumer-side event-ID deduplication protects the database operation that records processed events; it does not make the entire distributed system exactly-once.
+
+## Retry and Dead-Letter Handling
+
+The main Kafka listener uses a `DefaultErrorHandler` with a fixed backoff:
+
+- Initial processing attempt: 1
+- Retries: 2
+- Total attempts before recovery: up to 3
+
+After retries are exhausted, `DeadLetterPublishingRecoverer` publishes the failed record to `inventory.reserved-dlt`, preserving the source partition number.
+
+The DLT consumer reads the failed message and stores details such as:
+
+- Event ID
+- Original topic
+- Message key
+- DLT partition and offset
+- Original payload
+- Exception class and message
+- Failure status and timestamp
+
+The DLT listener uses a container-stopping error handler if persistence of a DLT record fails. This prevents a persistence failure from endlessly republishing the same record to the DLT. It also means the listener container requires operational attention and restart/recovery after the underlying database issue is resolved.
 
 ## API Reference
 
-Base URL for local development: `http://localhost:8080`
+Local base URL: `http://localhost:8080`
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `POST` | `/api/v1/inventory` | Create an inventory record |
-| `GET` | `/api/v1/inventory/getAll` | List inventory records with pagination |
-| `POST` | `/api/v1/inventory/reserve` | Reserve stock using an `Idempotency-Key` |
+| `POST` | `/api/v1/inventory/create` | Create an inventory item |
+| `GET` | `/api/v1/inventory/getAll` | Get a paginated inventory list |
+| `GET` | `/api/v1/inventory/sku/{sku}` | Get inventory by SKU |
+| `POST` | `/api/v1/inventory/reserve` | Reserve inventory using an idempotency key |
 | `GET` | `/actuator/health` | Application health |
-| `GET` | `/actuator/info` | Application metadata |
+| `GET` | `/actuator/info` | Application information |
 
-### Walkthrough with `curl`
+The inventory listing accepts `page` and `size` query parameters. The default values are `page=0` and `size=10`; the maximum page size is 100.
+
+### Example requests
+
+#### 1. Create inventory
 
 ```bash
-# 1. Create inventory
-curl -X POST http://localhost:8080/api/v1/inventory \
+curl -X POST http://localhost:8080/api/v1/inventory/create \
   -H "Content-Type: application/json" \
-  -d '{"sku":"ITEM-001","initialQuantity":100}'
+  -d '{"sku":"ITEM-001","availableQuantity":100}'
+```
 
-# 2. Reserve 2 units
+The request field is `availableQuantity` (not `initialQuantity`).
+
+#### 2. Get inventory by SKU
+
+```bash
+curl http://localhost:8080/api/v1/inventory/sku/ITEM-001
+```
+
+#### 3. Reserve stock
+
+```bash
 curl -X POST http://localhost:8080/api/v1/inventory/reserve \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: order-1001" \
   -d '{"sku":"ITEM-001","quantity":2}'
-
-# 3. Retry with the same key — same response, no double deduction
-curl -X POST http://localhost:8080/api/v1/inventory/reserve \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: order-1001" \
-  -d '{"sku":"ITEM-001","quantity":2}'
-
-# 4. Same key, different quantity — rejected
-curl -X POST http://localhost:8080/api/v1/inventory/reserve \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: order-1001" \
-  -d '{"sku":"ITEM-001","quantity":5}'
 ```
 
-### Sample responses
+#### 4. Retry the same reservation
 
-**Successful reservation — `200 OK`**
+Send the same request again with the same `Idempotency-Key`. Stock should not be deducted a second time.
 
-```json
-{
-  "reservationId": "a1b2c3d4-...",
-  "sku": "ITEM-001",
-  "quantity": 2,
-  "status": "CONFIRMED"
-}
-```
+#### 5. Try a conflicting payload
 
-**Insufficient stock — `409 Conflict`**
+Reuse `order-1001` with a different quantity. The API rejects reuse of an idempotency key with different request data.
 
-```json
-{
-  "error": "INSUFFICIENT_STOCK",
-  "message": "Requested 2 units but only 1 available"
-}
-```
+### Response behavior
 
-**Conflicting idempotency payload — `409 Conflict`**
+The API wraps successful responses in its `ApiResponse<T>` response structure.
 
-```json
-{
-  "error": "IDEMPOTENCY_CONFLICT",
-  "message": "Idempotency-Key 'order-1001' was previously used with a different payload"
-}
-```
+Observed behavior during manual API testing:
 
-**Validation failure — `400 Bad Request`**
+- Inventory creation returns `201 Created`.
+- Inventory retrieval returns `200 OK`.
+- Reservation processing returns `200 OK`, including persisted `SUCCESS` and `REJECTED` reservation outcomes.
+- Missing idempotency headers and request validation errors return `400 Bad Request`.
+- Reusing an idempotency key with different request data returned `400 Bad Request` in the tested API flow.
 
-```json
-{
-  "error": "VALIDATION_FAILED",
-  "message": "quantity must be greater than 0"
-}
-```
+Do not assume every business rejection is an HTTP error: insufficient stock and unknown SKU are represented as persisted rejected reservation outcomes in the current implementation.
 
 ### Swagger UI
 
@@ -268,150 +306,208 @@ http://localhost:8080/swagger-ui/index.html
 
 - Java 25
 - Git
-- A PostgreSQL database (Neon free tier is sufficient)
+- PostgreSQL database
+- Kafka-compatible broker (for Kafka/outbox functionality)
+- Maven wrapper (included in the repository)
 
-### 1. Clone
+### 1. Clone the repository
 
 ```bash
-git clone https://github.com/Vikasgabale9/StockGuard.git
-cd StockGuard
+git clone https://github.com/Vikasgabale9/stockguard.git
+cd stockguard
 ```
 
-### 2. Configure the database
+### 2. Configure environment variables
 
-Set these environment variables:
+Configure the database:
 
 ```text
-DB_URL=jdbc:postgresql://your-host/your-database?sslmode=require
-DB_USERNAME=your_username
-DB_PASSWORD=your_password
+DB_URL=jdbc:postgresql://<host>:5432/<database>?sslmode=require
+DB_USERNAME=<database-username>
+DB_PASSWORD=<database-password>
 ```
 
-`.env.example` is provided as a template. **Never commit real credentials.**
+Configure Kafka:
 
-### 3. Run
+```text
+KAFKA_BOOTSTRAP_SERVERS=<broker-host>:9092
+KAFKA_USERNAME=<kafka-username>
+KAFKA_PASSWORD=<kafka-password>
+```
 
-**Windows Command Prompt**
+Use your own PostgreSQL and Kafka-compatible broker credentials. Do not commit real credentials to Git.
+
+The repository includes an `.env.example` template. Environment-variable loading depends on how you launch the application; exporting variables in your shell or configuring your IDE/hosting environment is also valid.
+
+### 3. Database schema
+
+The repository currently contains the Flyway migration `V2__create_outbox_events.sql` for the outbox table. The base inventory, reservation, processed-event, and dead-letter tables have been provisioned in the development database separately.
+
+For a fresh database, ensure the required base tables and constraints exist before starting the application. Do not assume that the current repository contains a complete set of migrations for creating every table.
+
+The production profile uses Hibernate schema validation; it does not automatically create missing production tables.
+
+### 4. Run the application
+
+**Windows Command Prompt:**
 
 ```bat
 mvnw.cmd spring-boot:run
 ```
 
-**Linux / macOS**
+**Linux / macOS:**
 
 ```bash
 chmod +x mvnw
 ./mvnw spring-boot:run
 ```
 
-### 4. Verify
+Ensure the required database and Kafka environment variables are configured before startup.
 
-- Health: `http://localhost:8080/actuator/health`
+### 5. Verify
+
+- Health endpoint: `http://localhost:8080/actuator/health`
 - Swagger UI: `http://localhost:8080/swagger-ui/index.html`
 
 ## Configuration
 
 | Environment variable | Purpose |
 |---|---|
-| `DB_URL` | PostgreSQL JDBC connection URL |
-| `DB_USERNAME` | Database username |
-| `DB_PASSWORD` | Database password |
+| `DB_URL` | PostgreSQL JDBC URL |
+| `DB_USERNAME` | PostgreSQL username |
+| `DB_PASSWORD` | PostgreSQL password |
+| `KAFKA_BOOTSTRAP_SERVERS` | Kafka bootstrap server address |
+| `KAFKA_USERNAME` | Kafka SASL username |
+| `KAFKA_PASSWORD` | Kafka SASL password |
 
-HikariCP is tuned for Neon's serverless behaviour (`keepalive-time: 60000`, `max-lifetime: 240000`) so pooled connections are recycled before Neon suspends compute.
+The production profile configures database connection-pool settings and validates the database schema at startup. Kafka uses SASL over SSL with SCRAM-SHA-256 in the configured hosted-broker setup.
 
-## Testing
+## Testing and Verification
 
-Run the full suite:
+Run the Maven verification lifecycle:
+
+**Windows:**
+
+```bat
+mvnw.cmd --batch-mode clean verify
+```
+
+**Linux / macOS:**
 
 ```bash
 ./mvnw --batch-mode clean verify
 ```
 
-### Test summary
+The project includes JUnit tests for inventory behavior, concurrency, idempotency, validation, and application startup. The test suite was reported as passing during development. Exact test counts are intentionally not stated here because a current machine-readable test report was not included with this README update.
 
-| Check | Result |
-|---|---|
-| Local test suite | 18 passed, 0 failures, 0 errors, 0 skipped |
-| GitHub Actions CI | Passing |
-| `mvn verify` | `BUILD SUCCESS` |
+### Manual verification performed
 
-### What each test proves
+The following behaviors were exercised during development:
 
-| Test class | What it verifies |
-|---|---|
-| `InventoryConcurrencyTest` | 20 threads × 10 units against 100 stock → exactly 10 succeed, stock ends at 0. |
-| `InventoryConcurrencyTest` (rollback case) | When reservation persistence fails, the stock decrement is rolled back. |
-| `IdempotencyConcurrencyTest` | Two concurrent requests with the same key reserve stock only once. |
-| `IdempotencyConcurrencyTest` (conflict case) | Same key with a different payload is rejected. |
-| `IdempotencyConcurrencyTest` (rejected retry) | A previously rejected reservation remains rejected on retry. |
-| `InventoryValidationTest` | Blank SKU, zero/negative quantity, duplicate SKU, missing idempotency header are all rejected with `400`. |
-| `StockguardApplicationTests` | Spring context loads successfully. |
+- Inventory creation and retrieval.
+- Successful reservation and stock decrement.
+- Repeating the same idempotency key and payload without a second stock decrement.
+- Rejecting reuse of an idempotency key with different request data.
+- Insufficient-stock and unknown-SKU rejection.
+- Missing idempotency header and invalid quantity validation.
+- Duplicate SKU rejection.
+- A 15-request concurrent reservation run against 100 units: 10 requests succeeded, 5 were rejected, and final available quantity was 0.
+- Outbox event publication and consumer processing.
+- Republishing an event with the same event ID and observing the consumer ignore it as a duplicate.
+- A failed main-topic event being routed to the dead-letter topic and consumed by the DLT consumer.
 
-All integration tests run against a real PostgreSQL instance (Neon), not a mock.
+The 15-request run is one manual concurrency experiment, not a sustained load test or proof that every possible concurrency workload is safe. The duplicate-event test demonstrates the tested event-ID deduplication path, not global exactly-once processing.
 
-## Continuous Integration
+## CI and Docker Image Publishing
 
-Workflow file: `.github/workflows/maven.yml`
+Workflow: `.github/workflows/maven.yml`
 
-The workflow:
+The GitHub Actions workflow is configured to:
 
-1. Checks out the repository.
-2. Configures Java 25 (Temurin) with Maven caching.
-3. Makes `./mvnw` executable.
-4. Injects `DB_URL`, `DB_USERNAME`, `DB_PASSWORD` from GitHub Actions secrets.
-5. Runs `./mvnw --batch-mode clean verify`.
+1. Run on pushes and pull requests targeting `main`.
+2. Check out the repository.
+3. Set up Java 25 (Temurin) and Maven dependency caching.
+4. Run `./mvnw --batch-mode clean verify`, using database credentials stored as GitHub Actions secrets.
+5. After the build/test job succeeds on a push to `main`, build a Docker image and publish it to GitHub Container Registry.
 
-Triggers on push and pull request to `main`.
+The configured image tag is:
 
-**View CI runs:** [StockGuard GitHub Actions](https://github.com/Vikasgabale9/StockGuard/actions)
+```text
+ghcr.io/vikasgabale9/stockguard:latest
+```
+
+The Docker build uses the repository-root `dockerfile` path. The filename is lowercase in the current repository; Linux build runners are case-sensitive.
+
+**Important:** This documents the workflow configuration. A green Actions run and a successfully published GHCR package must be verified in GitHub before claiming that the pipeline has completed successfully.
+
+- [GitHub Actions runs](https://github.com/Vikasgabale9/stockguard/actions)
+- [GitHub Packages](https://github.com/Vikasgabale9?tab=packages)
+
+### Docker image design
+
+The Docker build uses two stages:
+
+- **Build stage:** Maven with Eclipse Temurin 25 compiles and packages the application.
+- **Runtime stage:** Eclipse Temurin 25 JRE Alpine runs the packaged JAR as a non-root user.
+
+The container uses the `prod` Spring profile and reads the port from the `PORT` environment variable, defaulting to `8080`.
+
+The JVM memory flags are deployment tuning choices, not a guarantee that the process will stay within a particular memory limit. Actual memory usage must be monitored in the target hosting environment.
 
 ## Design Decisions
 
-### Why PostgreSQL?
+### Why PostgreSQL conditional updates?
 
-PostgreSQL provides what this problem needs: atomic conditional updates, uniqueness constraints, and advisory transaction locks. All three are used in the reservation path.
+A conditional update makes the stock check and decrement one atomic database operation. This avoids relying on an application-level read followed by a separate write.
 
-### Why not `synchronized`?
+### Why not Java `synchronized`?
 
-`synchronized` only serialises threads within one JVM. In production, multiple app instances run behind a load balancer. Two threads on two different instances would bypass the JVM lock and still oversell. The database is the only shared authority, so the lock must live in the database.
-
-### Why not rely on `@Transactional` alone?
-
-`@Transactional` gives atomicity but does not prevent two concurrent transactions from both reading `available_quantity = 10` before either writes. The conditional `UPDATE ... WHERE available_quantity >= :quantity` and the advisory lock force serialisation on the contested row.
+A Java monitor coordinates threads only inside one JVM. It cannot coordinate multiple application instances. Database-level concurrency control works across application instances sharing the same database.
 
 ### Why idempotency keys?
 
-Network timeouts, client retries, and mobile reconnects can deliver the same logical request more than once. Without idempotency, a retry after a successful-but-unacknowledged reservation would deduct stock twice. Storing the outcome and keying on `Idempotency-Key` prevents this.
+Clients may retry after timeouts even when the server has already committed the reservation. The idempotency key lets the server return the stored outcome instead of executing the same logical reservation again.
 
-### Why advisory transaction locks (`pg_advisory_xact_lock`)?
+### Why the transactional outbox?
 
-The unique constraint on `idempotency_key` is the correct final guarantee, but without coordination the second request would fail with a raw `DataIntegrityViolationException` after doing work. `pg_advisory_xact_lock` serialises the requests up front so the loser waits, reads the existing reservation, and returns it cleanly. Transaction-scoped locking is compatible with PgBouncer's transaction pooling mode, which is what Neon's pooled endpoint uses.
+Writing to PostgreSQL and publishing to Kafka are two separate operations. The outbox stores the event in the same database transaction as the reservation; a separate publisher sends it to Kafka after commit.
+
+### Why consumer-side deduplication?
+
+Kafka messages can be delivered more than once. A unique event ID in the database allows the consumer to detect a previously recorded event and avoid repeating that database operation.
 
 ## Known Limitations
 
-- **At-least-once semantics at the transport layer.** The HTTP endpoint does not guarantee exactly-once execution. Idempotency keys plus database atomicity provide the observable "exactly-once from the client's perspective" behaviour; a client that changes its idempotency key between retries loses this guarantee.
-- **Cloud database in CI.** Integration tests run against Neon. Neon's cold-start and network latency can occasionally slow the concurrency tests; the Hikari configuration mitigates stale-connection failures but not network jitter. A Testcontainers-based run would be more deterministic at the cost of not testing against the real environment.
-- **No authentication.** All endpoints are public. Production would require JWT or OAuth2 on the reservation and inventory APIs.
-- **No load testing.** Throughput and latency under sustained traffic have not been benchmarked, so no RPS claims are made.
+- **At-least-once event delivery:** the outbox publisher can publish a record again if it crashes after broker acknowledgement but before marking the row as published. Consumer deduplication handles the demonstrated event-recording path; this is not end-to-end exactly-once processing.
+- **Multiple publisher instances:** the current outbox polling design does not establish a distributed claim/lease mechanism for coordinating multiple application instances. Multiple instances may publish the same pending row.
+- **Outbox retry policy:** failed outbox records are eligible for later polling; there is no documented exponential backoff or maximum-attempt policy in the current implementation.
+- **DLT persistence recovery:** if saving a DLT record fails, the DLT listener container stops. It requires operational recovery; automatic restart is not implemented.
+- **Limited downstream consumer work:** the main Kafka consumer currently demonstrates event consumption and duplicate-event recording/logging. Inventory is reserved synchronously by the REST API.
+- **Database bootstrap:** the repository currently includes the outbox migration, but not a complete migration history for all base tables.
+- **No API authentication:** inventory endpoints do not currently require JWT/OAuth2 authentication.
+- **No sustained load benchmark:** no reproducible throughput or latency benchmark has been completed.
+- **Cloud-dependent integration testing:** development integration tests use a hosted PostgreSQL database; a local Testcontainers-based test environment is not currently documented.
+- **CI/CD verification:** workflow configuration alone does not prove that a GitHub Actions run or GHCR publication succeeded.
 
-## Future Enhancements
+## Future Improvements
 
-Not implemented today — listed so the scope is explicit:
-
-- Apache Kafka for asynchronous reservation events, using the transactional outbox pattern to guarantee event publication consistency with the reservation transaction.
-- Dead-letter queue and retry policy for event consumers.
-- Load testing with a reproducible benchmark.
-- JWT authentication for admin endpoints.
-- Testcontainers-based CI to remove dependency on a cloud database.
-- Public deployment with a documented live demo.
+- Add complete versioned database migrations for every table and constraint.
+- Add a robust outbox claiming strategy for multiple application instances.
+- Add bounded retry/backoff and operational monitoring for outbox failures.
+- Add DLT replay and recovery tooling.
+- Add meaningful downstream business processing for reservation events.
+- Add JWT-based authentication and authorization.
+- Add Testcontainers-based integration testing.
+- Add repeatable load tests and publish measured results.
+- Add image version tags and an automated deployment stage after validating the GHCR workflow.
 
 ## Author
 
 **Vikas Vitthalrao Gabale**
 
 - GitHub: [Vikasgabale9](https://github.com/Vikasgabale9)
-- Project: [StockGuard](https://github.com/Vikasgabale9/StockGuard)
+- Project: [StockGuard](https://github.com/Vikasgabale9/stockguard)
 
 ---
 
-StockGuard is a learning and portfolio project focused on reliable backend engineering, database concurrency, idempotent APIs, and automated testing.
+StockGuard is a portfolio project focused on database concurrency, idempotent API design, asynchronous event processing, and practical backend reliability patterns.

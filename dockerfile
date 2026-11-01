@@ -3,33 +3,31 @@ FROM maven:3.9-eclipse-temurin-25 AS builder
 
 WORKDIR /build
 
-# Layer cache: dependencies resolve separately from source
+# Download dependencies first for better layer caching
 COPY pom.xml .
 RUN mvn -B dependency:go-offline
 
-# Build the executable JAR (tests already run in GitHub Actions)
+# Build executable JAR
 COPY src ./src
 RUN mvn -B clean package -DskipTests
+
 
 # ---------- Stage 2: Runtime ----------
 FROM eclipse-temurin:25-jre-alpine
 
-# Non-root user — Render runs containers as root by default, avoid that
+# Create non-root application user
 RUN addgroup -S app && adduser -S app -G app
+
 WORKDIR /app
-RUN chown -R app:app /app
+
+# Copy JAR with correct ownership
+COPY --from=builder --chown=app:app /build/target/*.jar app.jar
+
 USER app
 
-COPY --from=builder /build/target/*.jar app.jar
-
-# Render injects PORT at runtime; default to 8080 for local `docker run`
+# Render injects PORT at runtime
 ENV PORT=8080
 EXPOSE 8080
 
-# JVM flags tuned for 512 MB / 0.1 CPU (Render free tier)
-# MaxRAMPercentage=65  → heap ~330 MB, leaves room for metaspace + OS
-# MaxMetaspaceSize=128m → cap class metadata; without this Hibernate+Spring can exceed defaults
-# UseSerialGC          → Serial GC beats G1 on single-core containers
-# Xss512k              → 200 Tomcat threads × 1MB default stack = 200 MB wasted
-
+# JVM memory and thread tuning
 ENTRYPOINT ["sh", "-c", "exec java -XX:MaxRAMPercentage=65 -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC -Xss512k -Dserver.port=${PORT:-8080} -Dspring.profiles.active=prod -jar app.jar"]
